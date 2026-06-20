@@ -159,6 +159,18 @@ def _parse_skill_metadata(text: str) -> str:
     return f"{name}: {description}".strip(": ")
 
 
+def _rule_always_apply(text: str) -> bool:
+    """Return True when rule frontmatter marks it always-on (default True)."""
+    match = FRONTMATTER_RE.match(text)
+    if not match:
+        return True
+    for line in match.group(1).splitlines():
+        if line.startswith("alwaysApply:"):
+            value = line.split(":", 1)[1].strip().lower()
+            return value not in {"false", "0", "no"}
+    return True
+
+
 def _scan_rules(counter: TokenCounter, base: Path) -> list[ItemEstimate]:
     items: list[ItemEstimate] = []
     if not base.is_dir():
@@ -168,11 +180,15 @@ def _scan_rules(counter: TokenCounter, base: Path) -> list[ItemEstimate]:
             continue
         text = _read_text(path)
         tokens = counter.count(text)
+        if _rule_always_apply(text):
+            listed, body = tokens, 0
+        else:
+            listed, body = 0, tokens
         items.append(
             ItemEstimate(
                 path=str(path),
-                listed_tokens=tokens,
-                body_tokens=0,
+                listed_tokens=listed,
+                body_tokens=body,
                 chars=len(text),
             )
         )

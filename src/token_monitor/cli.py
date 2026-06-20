@@ -223,8 +223,8 @@ def top_offenders(
     result = run_scan(encoding=encoding)
     rows: list[tuple[str, str, int, str]] = []
 
-    for rule in sorted(result.rules, key=lambda r: r.total_tokens, reverse=True)[:10]:
-        rows.append(("rule", Path(rule.path).name, rule.total_tokens, rule.path))
+    for rule in sorted(result.rules, key=lambda r: r.listed_tokens, reverse=True)[:10]:
+        rows.append(("rule", Path(rule.path).name, rule.listed_tokens, rule.path))
 
     for skill in sorted(result.user_skills, key=lambda s: s.listed_tokens, reverse=True)[:10]:
         rows.append(("user_skill", Path(skill.path).parent.name, skill.listed_tokens, skill.path))

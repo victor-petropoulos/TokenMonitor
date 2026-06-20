@@ -5,7 +5,7 @@ import sqlite3
 from pathlib import Path
 
 from token_monitor.hook_record import record_from_stdin
-from token_monitor.scanner import TokenCounter, diff_scans, simulate_disable, ScanResult
+from token_monitor.scanner import TokenCounter, diff_scans, simulate_disable, ScanResult, _rule_always_apply
 from token_monitor.store import get_latest, insert_event
 
 
@@ -63,6 +63,14 @@ def test_hook_record_stdin(tmp_path, monkeypatch):
     assert event.input_tokens == 5000
 
     monkeypatch.setattr(store_mod, "usage_db_path", original)
+
+
+def test_rule_always_apply():
+    always_on = "---\nalwaysApply: true\n---\n# Rule body"
+    scoped = "---\nalwaysApply: false\n---\n# Scoped rule"
+    assert _rule_always_apply(always_on) is True
+    assert _rule_always_apply(scoped) is False
+    assert _rule_always_apply("# no frontmatter") is True
 
 
 def test_simulate_disable_mcp():
