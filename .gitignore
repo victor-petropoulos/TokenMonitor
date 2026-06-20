@@ -1,6 +1,8 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
 
-# MCP Index files
-.mcp-index/code_index.db
-.mcp-index/code_index.db-shm
-.mcp-index/code_index.db-wal
-.mcp-index/.index_metadata.json
+# Local MCP / code-index artifacts
+.mcp-index/
+mcp_server.log
