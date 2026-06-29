@@ -1,0 +1,37 @@
+{
+  "task": "Context Expansion Estimation",
+  "description": "Analyze a proposed Cursor configuration (MCP servers and Rules) and estimate the impact on the LLM context window.",
+  "input_schema": {
+    "mcp_servers": [
+      {
+        "name": "string",
+        "tool_count": "integer",
+        "description_length_approx": "integer",
+        "complexity_score": "float (1-5)"
+      }
+    ],
+    "rules": [
+      {
+        "description": "string",
+        "estimated_token_count": "integer"
+      }
+    ],
+    "current_usage_stats": {
+      "avg_input_tokens": "integer",
+      "avg_output_tokens": "integer"
+    }
+  },
+  "output_schema": {
+    "projected_context_increase": "integer (total tokens)",
+    "complexity_rating": "string (Low, Medium, High, Critical)",
+    "bottleneck_analysis": "string (Detailed reasoning)",
+    "optimization_suggestions": [
+      {
+        "target": "string (server name or rule index)",
+        "action": "string (disable | simplify | consolidate)",
+        "reason": "string"
+      }
+    ]
+  },
+  "system_prompt": "You are a Context Optimization Expert for Cursor IDE. Your goal is to predict how much 'headroom' a new configuration will consume. You must account for the fact that MCP tools are not just static text; their presence increases the complexity of the agent's reasoning and the potential size of the tool-call/response loop. Be conservative in your estimates to ensure the user never hits a hard context limit."
+}

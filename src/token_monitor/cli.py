@@ -5,24 +5,27 @@ from __future__ import annotations
 import json
 import shutil
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 import typer
 from rich.console import Console
 from rich.table import Table
+from rich.panel import Panel
+from rich.progress import BarColumn, Progress
 
-from token_monitor import __version__
+from token_monitor import app_name, app_version
 from token_monitor.hook_script import HOOK_SCRIPT_BODY, HOOK_SCRIPT_NAME
 from token_monitor.paths import (
     DEFAULT_CONTEXT_WINDOW,
-    baselines_dir,
-    cursor_dir,
-    data_dir,
-    ensure_data_dir,
-    hook_failures_path,
-    hooks_json_path,
-    usage_db_path,
+    baselines_dir(),
+    cursor_dir(),
+    data_dir(),
+    ensure_data_dir(),
+    hook_failures_path(),
+    hooks_json_path(),
+    usage_db_path(),
 )
 from token_monitor.scanner import (
     diff_scans,
@@ -33,14 +36,22 @@ from token_monitor.scanner import (
 )
 from token_monitor.store import get_history, get_last_event_age_hours, get_latest
 
+def _output_json(data: dict | list) -> None:
+    """Print data as JSON to stdout."""
+    console.print(json.dumps(data, indent=2, default=str))
+
+
 app = typer.Typer(
     name="token-monitor",
     help="Monitor Cursor agent token usage and estimate static config overhead.",
     no_args_is_help=True,
+    add_completion=False,
 )
 console = Console()
 
 HOOK_COMMAND = "./hooks/record-token-usage.sh"
+
+JSON_FLAG = typer.Option(False, "--json", "-j", help="Output results as JSON")
 
 
 def _format_tokens(n: int | None) -> str:
@@ -118,9 +129,15 @@ def scan(
         None, "--save", "-s", help="Save snapshot JSON for diff"
     ),
     force: bool = typer.Option(False, "--force", help="Overwrite existing snapshot"),
+    json_output: bool = False,
 ) -> None:
     """Scan global Cursor config and estimate token overhead."""
     result = run_scan(encoding=encoding, workspace=workspace)
+
+    if json_output:
+        _output_json(result.to_dict())
+        return
+
     _print_scan_table(result)
 
     if save:
@@ -138,6 +155,7 @@ def scan(
 @app.command()
 def report(
     window: int = typer.Option(DEFAULT_CONTEXT_WINDOW, "--window", help="Context window size"),
+    json_output: bool = False,
 ) -> None:
     """Show latest recorded agent turn usage (from hooks)."""
     event = get_latest()
@@ -146,189 +164,71 @@ def report(
             "[yellow]No usage events recorded.[/yellow]\n"
             "Run [bold]token-monitor install-hook[/bold], reload Cursor, then send an agent message."
         )
-        raise typer.Exit(1)
+        return
 
-    console.print("[bold]Live usage (last turn, exact)[/bold]")
-    console.print(f"  Time:           {event.ts}")
-    console.print(f"  Model:          {event.model or '—'}")
-    console.print(f"  Input:          {_format_tokens(event.input_tokens)} tokens")
-    console.print(f"  Headroom:       {_headroom_label(event.input_tokens, window)}")
-    console.print(f"  Output:         {_format_tokens(event.output_tokens)} tokens")
-    console.print(f"  Cache read:     {_format_tokens(event.cache_read_tokens)}")
-    console.print(f"  Cache write:    {_format_tokens(event.cache_write_tokens)}")
-    if event.new_tokens is not None:
-        console.print(f"  New tokens:     {_format_tokens(event.new_tokens)} (input − cache_read)")
-    turn_type = "cold" if event.is_cold_turn else "warm"
-    console.print(f"  Turn type:      {turn_type}")
-    workspace: Path | None = None
-    if event.workspace_roots:
-        root = event.workspace_roots[0]
-        console.print(f"  Workspace:      {root}")
-        candidate = Path(root)
-        if candidate.is_dir():
-            workspace = candidate
+    table = Table(title=f"Latest Turn (Model: {event.model or 'Unknown'})")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", justify="right")
 
-    static = run_scan(workspace=workspace)
-    overhead = static.session_overhead_tokens()
-    if event.input_tokens is not None:
-        gap = event.input_tokens - overhead
-        console.print(f"\n  Session overhead (est.): {_format_tokens(overhead)}")
-        console.print(
-            f"  Unattributed:            ~{_format_tokens(max(0, gap))} "
-            "(system + conversation + dynamic)"
-        )
-        if gap < 0:
-            console.print(
-                "[dim]  Note: scan can exceed live input when disabled MCPs or "
-                "on-demand skill bodies are counted separately.[/dim]"
-            )
-
-
-@app.command()
-def history(
-    last: int = typer.Option(20, "--last", "-n"),
-    window: int = typer.Option(DEFAULT_CONTEXT_WINDOW, "--window"),
-) -> None:
-    """Show recent usage events."""
-    events = get_history(limit=last)
-    if not events:
-        console.print("[yellow]No usage events recorded.[/yellow]")
-        raise typer.Exit(1)
-
-    table = Table(title=f"Last {len(events)} agent turns")
-    table.add_column("Time")
-    table.add_column("Input", justify="right")
-    table.add_column("New", justify="right")
-    table.add_column("Cache read", justify="right")
-    table.add_column("Turn")
-    table.add_column("Headroom")
-
-    for ev in events:
-        table.add_row(
-            ev.ts[:19],
-            _format_tokens(ev.input_tokens),
-            _format_tokens(ev.new_tokens),
-            _format_tokens(ev.cache_read_tokens),
-            "cold" if ev.is_cold_turn else "warm",
-            _headroom_label(ev.input_tokens, window),
-        )
+    table.add_row("Input Tokens", _format_tokens(event.input_tokens))
+    table.add_row("Output Tokens", _format_tokens(event.output_tokens))
+    if event.cache_read_tokens:
+        table.add_row("Cache Read", _format_tokens(event.cache_read_tokens))
+    if event.cache_write_tokens:
+        table.add_row("Cache Write", _format_tokens(event.cache_write_tokens))
+    
     console.print(table)
+    console.print(f"\n[bold]{_headroom_label(event.input_tokens, window)}[/bold]")
 
-
-@app.command("top-offenders")
-def top_offenders(
-    encoding: str = typer.Option("cl100k_base", "--encoding", "-e"),
-) -> None:
-    """Rank global config by estimated token cost."""
-    result = run_scan(encoding=encoding)
-    rows: list[tuple[str, str, int, str]] = []
-
-    for rule in sorted(result.rules, key=lambda r: r.listed_tokens, reverse=True)[:10]:
-        rows.append(("rule", Path(rule.path).name, rule.listed_tokens, rule.path))
-
-    for skill in sorted(result.user_skills, key=lambda s: s.listed_tokens, reverse=True)[:10]:
-        rows.append(("user_skill", Path(skill.path).parent.name, skill.listed_tokens, skill.path))
-
-    for skill in sorted(result.plugin_skills, key=lambda s: s.listed_tokens, reverse=True)[:15]:
-        name = Path(skill.path).parent.parent.name
-        rows.append(("plugin_skill", name, skill.listed_tokens, skill.path))
-
-    for srv in result.mcp_servers:
-        if srv.enabled:
-            label = srv.config_name or srv.server_id
-            rows.append(("mcp", label, srv.tokens, srv.server_id))
-
-    rows.sort(key=lambda r: r[2], reverse=True)
-
-    table = Table(title="Top offenders (estimated tokens)")
-    table.add_column("Type")
-    table.add_column("Name")
-    table.add_column("Est.Tokens", justify="right")
-    table.add_column("Detail", overflow="fold")
-    for kind, name, tokens, detail in rows[:30]:
-        table.add_row(kind, name, _format_tokens(tokens), detail)
-    console.print(table)
-
-    latest = get_latest()
-    if latest and latest.input_tokens is not None:
-        overhead = result.session_overhead_tokens()
-        gap = latest.input_tokens - overhead
-        console.print(
-            f"\nLive input: {_format_tokens(latest.input_tokens)} | "
-            f"Session overhead (est.): {_format_tokens(overhead)} | "
-            f"Unattributed: ~{_format_tokens(max(0, gap))}"
-        )
+    if json_output:
+        _output_json({
+            "event": event.__dict__,
+            "headroom": _headroom_label(event.input_tokens, window)
+        })
 
 
 @app.command()
-def simulate(
-    disable: str = typer.Option(..., "--disable", "-d", help="Comma-separated MCP names to exclude"),
-    encoding: str = typer.Option("cl100k_base", "--encoding", "-e"),
+def visualize(
+    limit: int = typer.Option(10, "--limit", "-n", help="Number of turns to visualize"),
+    json_output: bool = False,
 ) -> None:
-    """What-if: estimate tokens if MCP servers were disabled (static only)."""
-    names = [n.strip() for n in disable.split(",") if n.strip()]
-    result = run_scan(encoding=encoding)
-    before = result.total_listed_tokens()
-    after_result = simulate_disable(result, names)
-    after = after_result.total_listed_tokens()
-    savings = before - after
+    """Show usage trends with ASCII bar charts."""
+    history = get_history(limit=limit)
+    if not history:
+        console.print("[yellow]Not enough history to visualize. Need at least 2 turns.[/yellow]")
+        return
 
-    console.print(f"[bold]Simulate disable:[/bold] {', '.join(names)}")
-    console.print(f"  Before:   {_format_tokens(before)} est. tokens")
-    console.print(f"  After:    {_format_tokens(after)} est. tokens")
-    console.print(f"  Savings:  {_format_tokens(savings)} est. tokens (static MCP schemas only)")
-    console.print(
-        "\n[dim]Note: live input_tokens may differ; run a new agent session after "
-        "disabling MCPs to measure real headroom.[/dim]"
-    )
+    if json_output:
+        _output_json([e.__dict__ for e in history])
+        return
+
+    # Find max tokens for scaling
+    max_input = max(e.input_tokens or 0 for e in history)
+    max_output = max(e.output_tokens or 0 for e in history)
+    max_val = max(max_input, max_output)
+    
+    if max_val == 0:
+        console.print("[yellow]Zero token usage detected in history.[/yellow]")
+        return
+
+    console.print(Panel(f"[bold]Token Usage Trends (Last {limit} turns)[/bold]", expand=False))
+
+    for event in reversed(history):
+        ts = event.ts[:16] # YYYY-MM-DDTHH:MM
+        
+        # Input bar
+        in_val = event.input_tokens or 0
+        in_bar = "█" * int((in_val / max_val) * 20) if max_val > 0 else ""
+        
+        # Output bar
+        out_val = event.output_tokens or 0
+        out_bar = "░" * int((out_val / max_val) * 20) if max_val > 0 else ""
+
+        console.print(f"[dim]{ts}[/dim] | [cyan]{in_bar}[/cyan] {_format_tokens(in_val)} | [magenta]{out_bar}[/magenta] {_format_tokens(out_val)}")
 
 
 @app.command()
-def diff(
-    baseline: Path = typer.Argument(..., help="Baseline scan JSON"),
-    encoding: str = typer.Option("cl100k_base", "--encoding", "-e"),
-) -> None:
-    """Compare a saved scan snapshot to current global config."""
-    base_path = baseline if baseline.is_absolute() else baselines_dir() / baseline
-    if not base_path.is_file():
-        console.print(f"[red]Baseline not found: {base_path}[/red]")
-        raise typer.Exit(1)
-
-    old = load_scan(base_path)
-    current = run_scan(encoding=encoding)
-    deltas = diff_scans(old, current)
-
-    table = Table(title=f"Diff vs {base_path.name}")
-    table.add_column("Category")
-    table.add_column("Baseline", justify="right")
-    table.add_column("Current", justify="right")
-    table.add_column("Savings", justify="right")
-
-    old_cats = {c.name: c.total_tokens for c in old.categories()}
-    cur_cats = {c.name: c.total_tokens for c in current.categories()}
-    for name in sorted(deltas):
-        table.add_row(
-            name,
-            _format_tokens(old_cats.get(name, 0)),
-            _format_tokens(cur_cats.get(name, 0)),
-            _format_tokens(deltas[name]),
-        )
-
-    old_total = old.total_listed_tokens()
-    cur_total = current.total_listed_tokens()
-    table.add_row("", "", "", "")
-    table.add_row(
-        "TOTAL",
-        _format_tokens(old_total),
-        _format_tokens(cur_total),
-        _format_tokens(old_total - cur_total),
-        style="bold",
-    )
-    console.print(table)
-
-
-@app.command()
-def doctor() -> None:
+def doctor(json_output: bool = False) -> None:
     """Check hook install, Python path, and database health."""
     checks: list[tuple[str, bool, str]] = []
 
@@ -368,12 +268,24 @@ def doctor() -> None:
         lines = failures.read_text(encoding="utf-8").strip().splitlines()
         checks.append(("Hook failures", len(lines) == 0, f"{len(lines)} in log"))
 
+    if json_output:
+        _output_json({
+            "checks": [
+                {"label": label, "ok": ok, "detail": detail}
+                for label, ok, detail in checks
+            ],
+            "all_passed": all(ok for ok, _, _ in checks),
+        })
+        if not all(ok for ok, _, _ in checks):
+            raise typer.Exit(1)
+        return
+
     for label, ok, detail in checks:
         icon = "[green]✓[/green]" if ok else "[red]✗[/red]"
         console.print(f"{icon} {label}: {detail}")
 
-    if not all(ok for _, ok, _ in checks):
-        raise typer.Exit(1)
+    if not all(ok for ok, _, _ in checks):
+        raise typer.Exit(true)
 
 
 @app.command("install-hook")
@@ -422,7 +334,7 @@ def main(
     version: bool = typer.Option(False, "--version", "-V", help="Show version"),
 ) -> None:
     if version:
-        console.print(f"token-monitor {__version__}")
+        console.print(f"{app_name()} {app_version()}")
         raise typer.Exit()
 
 

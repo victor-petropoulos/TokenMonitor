@@ -1,0 +1,30 @@
+{
+  "mcp_servers": [
+    {
+      "name": "google-maps",
+      "tool_count": 5,
+      "description_length_approx": 200,
+      "complexity_score": 2.5
+    },
+    {
+      "name": "github-repo",
+      "tool_count": 15,
+      "description_length_approx": 500,
+      "complexity_score": 4.0
+    }
+  ],
+  "rules": [
+    {
+      "description": "Always use concise language and avoid verbosity in responses.",
+      "estimated_token_count": 45
+    },
+    {
+      "description": "When using tools, always verify the output against the user's original intent.",
+      "estimated_token_count": 60
+    }
+  ],
+  "current_usage_stats": {
+    "avg_input_tokens": 1200,
+    "avg_output_tokens": 500
+  }
+}
